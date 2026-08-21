@@ -1,4 +1,4 @@
-# 🤖 Jarvis — assistant vocal local
+# 🤖 Keranos — assistant vocal local
 
 *[English version](README.en.md)*
 
