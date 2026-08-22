@@ -1,16 +1,17 @@
 """Abstraction du modele de langage : le reste du code ignore quel provider tourne.
 
-Deux implementations, choisies par config.yaml (mode: cloud | local) :
+Trois implementations, choisies par config.yaml (mode: groq | cloud/hybride | local) :
+  - GroqProvider    : API Groq (ultra-rapide, Llama 3.3, rotation auto).
   - ClaudeProvider  : API Anthropic (cloud, defaut).
   - OllamaProvider  : Ollama en local (http://localhost:11434), 100% offline.
 
-Les deux exposent la meme methode `repondre(systeme, historique, outils)` et
+Tous exposent la meme methode `repondre(systeme, historique, outils)` et
 renvoient un objet a la forme d'une reponse Anthropic (.stop_reason + .content,
 chaque bloc ayant .type / .text / .name / .input / .id). Ainsi la boucle de
-dialogue de jarvis14 ne change pas selon le provider.
+dialogue de Kéranos ne change pas selon le provider.
 
-L'historique reste au format "content blocks" d'Anthropic ; OllamaProvider le
-traduit vers/depuis le format d'Ollama de facon interne.
+L'historique reste au format "content blocks" d'Anthropic ; GroqProvider et
+OllamaProvider le traduisent vers/depuis leur format respectif de facon interne.
 """
 import json
 import logging
@@ -55,6 +56,179 @@ class ProviderLLM:
 
     def repondre(self, systeme, historique, outils):
         raise NotImplementedError
+
+
+# --------------------------------------------------------------- Groq (cloud rapide)
+
+class GroqProvider(ProviderLLM):
+    nom = "Groq"
+
+    def __init__(self, modele=None):
+        import os
+        self.cle = reglage("groq.cle", "") or os.environ.get("GROQ_API_KEY", "")
+        self.modele = modele or reglage("groq.modele", "openai/gpt-oss-120b")
+        rotation = reglage("groq.modeles_rotation", [
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "groq/compound",
+            "llama-3.3-70b-versatile",
+        ])
+        if not isinstance(rotation, list):
+            rotation = [rotation]
+        self.rotation = [self.modele] + [m for m in rotation if m != self.modele]
+        self.api_url = "https://api.groq.com/openai/v1/chat/completions"
+
+    def disponible(self):
+        return bool(self.cle and self.cle.strip())
+
+    def _traduire(self, systeme, historique):
+        messages = [{"role": "system", "content": systeme}]
+        for m in historique:
+            role, contenu = m.get("role"), m.get("content")
+            if role == "user":
+                if isinstance(contenu, str):
+                    messages.append({"role": "user", "content": contenu})
+                else:
+                    for item in (contenu or []):
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("type") == "tool_result":
+                            c = item.get("content")
+                            if isinstance(c, list):
+                                c = "[image capturee — format non supporte]"
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": item.get("tool_use_id", "call_0"),
+                                "content": str(c),
+                            })
+                        elif item.get("type") == "image":
+                            messages.append({"role": "user", "content": "[image]"})
+                        elif item.get("type") == "text":
+                            messages.append({"role": "user", "content": item.get("text", "")})
+            else:  # assistant
+                if isinstance(contenu, str):
+                    messages.append({"role": "assistant", "content": contenu})
+                else:
+                    texte = " ".join(b.text for b in (contenu or [])
+                                     if getattr(b, "type", None) == "text" and b.text)
+                    appels = [b for b in (contenu or []) if getattr(b, "type", None) == "tool_use"]
+                    msg = {"role": "assistant"}
+                    if texte:
+                        msg["content"] = texte
+                    if appels:
+                        msg["tool_calls"] = [
+                            {
+                                "id": getattr(b, "id", None) or f"call_{i}",
+                                "type": "function",
+                                "function": {
+                                    "name": b.name,
+                                    "arguments": json.dumps(b.input or {}) if isinstance(b.input, dict) else str(b.input or "{}")
+                                }
+                            }
+                            for i, b in enumerate(appels)
+                        ]
+                    if not texte and not appels:
+                        msg["content"] = ""
+                    messages.append(msg)
+        return messages
+
+    def _outils(self, outils):
+        tools = []
+        for o in (outils or []):
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": o["name"],
+                    "description": o.get("description", ""),
+                    "parameters": o.get("input_schema", {"type": "object", "properties": {}})
+                }
+            })
+        return tools
+
+    def _chat(self, messages, tools):
+        import requests
+
+        derniere_erreur = None
+        for modele_courant in self.rotation:
+            payload = {
+                "model": modele_courant,
+                "messages": messages,
+                "temperature": float(reglage("groq.temperature", 0.3)),
+                "max_tokens": int(reglage("groq.max_tokens", 1024)),
+            }
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
+
+            headers = {
+                "Authorization": f"Bearer {self.cle}",
+                "Content-Type": "application/json",
+            }
+
+            try:
+                r = requests.post(self.api_url, headers=headers, json=payload, timeout=25)
+                if r.status_code == 429 or r.status_code >= 500:
+                    LOG.warning("groq: modele %s statut %s, bascule sur le modele suivant de la rotation",
+                                modele_courant, r.status_code)
+                    derniere_erreur = f"HTTP {r.status_code}: {r.text}"
+                    continue
+                r.raise_for_status()
+                data = r.json()
+
+                # Enregistrement consommation budget
+                try:
+                    usage = data.get("usage", {})
+                    if usage:
+                        from core import budget
+                        budget.enregistrer(
+                            "Groq (Jarvis)", modele_courant,
+                            usage.get("prompt_tokens", 0) or 0,
+                            usage.get("completion_tokens", 0) or 0)
+                except Exception:
+                    pass
+
+                return data
+            except Exception as e:
+                LOG.warning("groq: echec sur %s (%s)", modele_courant, e)
+                derniere_erreur = e
+                continue
+
+        raise RuntimeError(f"Tous les modeles Groq ont echoue. Derniere erreur : {derniere_erreur}")
+
+    def _parser(self, rep):
+        choices = rep.get("choices", [])
+        if not choices:
+            return Reponse("end", [Bloc("text", text="")])
+        msg = choices[0].get("message", {}) or {}
+        blocs = []
+        texte = (msg.get("content") or "").strip()
+        if texte:
+            blocs.append(Bloc("text", text=texte))
+        for i, tc in enumerate(msg.get("tool_calls") or []):
+            call_id = tc.get("id") or f"call_{i}"
+            fn = tc.get("function", {}) or {}
+            nom = fn.get("name")
+            args_raw = fn.get("arguments", {})
+            if isinstance(args_raw, str):
+                try:
+                    args = json.loads(args_raw)
+                except Exception:
+                    args = {}
+            else:
+                args = args_raw or {}
+            blocs.append(Bloc("tool_use", id=call_id, name=nom, input=args))
+        stop = "tool_use" if any(b.type == "tool_use" for b in blocs) else "end"
+        return Reponse(stop, blocs)
+
+    def repondre(self, systeme, historique, outils):
+        messages = self._traduire(systeme, historique)
+        tools = self._outils(outils)
+        try:
+            return self._parser(self._chat(messages, tools))
+        except Exception as e:
+            LOG.exception("groq: echec d'appel")
+            return Reponse("end", [Bloc("text", text=(
+                f"Desole, l'API Groq a rencontre une erreur ({e}). Verifie ta cle ou ta connexion."))])
 
 
 # --------------------------------------------------------------- Claude (cloud)
@@ -104,7 +278,7 @@ class OllamaProvider(ProviderLLM):
 
     def __init__(self):
         self.hote = reglage("ollama.hote", "http://localhost:11434").rstrip("/")
-        self.modele = reglage("ollama.modele", "qwen3.5:4b")
+        self.modele = reglage("ollama.modele", "qwen2.5:1.5b")
 
     def disponible(self):
         try:
@@ -209,22 +383,32 @@ _LLM = None
 
 
 def llm():
-    """Provider LLM courant selon le mode (local | hybride | qualite).
+    """Provider LLM courant selon le mode (groq | local | hybride | qualite).
 
+    - groq    : GroqProvider (ultra-rapide, Llama 3.3).
     - local   : Ollama.
-    - hybride : Claude, modele economique (anthropic.modele) — reflexes + vision.
+    - hybride : Claude, modele economique (anthropic.modele) ou Groq si configure.
     - qualite : Claude, modele fort (anthropic.modele_qualite)."""
     global _LLM
     if _LLM is None:
         from core.routage import mode_actuel
         m = mode_actuel()
-        if m == "local":
+        fournisseur = (reglage("llm.fournisseur", "") or "").lower()
+
+        if m == "groq" or fournisseur == "groq":
+            _LLM = GroqProvider()
+        elif m == "local" or fournisseur == "ollama":
             _LLM = OllamaProvider()
         elif m == "qualite":
             _LLM = ClaudeProvider(reglage("anthropic.modele_qualite",
                                           "claude-sonnet-4-5"))
         else:                                    # hybride (defaut)
-            _LLM = ClaudeProvider(reglage("anthropic.modele", "claude-haiku-4-5"))
+            # Si une cle Groq est presente et pas de cle Claude, on utilise Groq
+            if reglage("groq.cle", "") and not reglage("anthropic.cle", ""):
+                _LLM = GroqProvider()
+            else:
+                _LLM = ClaudeProvider(reglage("anthropic.modele", "claude-haiku-4-5"))
+
         LOG.info("provider LLM : %s (mode %s, modele %s)",
                  _LLM.nom, m, getattr(_LLM, "modele", "-"))
     return _LLM
@@ -234,3 +418,4 @@ def reinitialiser():
     """Force la reconstruction du provider au prochain llm() (apres un switch de mode)."""
     global _LLM
     _LLM = None
+

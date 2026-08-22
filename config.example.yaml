@@ -1,12 +1,22 @@
-# Configuration de Jarvis — copie ce fichier en config.yaml et mets tes valeurs.
+# Configuration de Kéranos — copie ce fichier en config.yaml et mets tes valeurs.
 # config.yaml n'est PAS versionne (voir .gitignore) : tes secrets restent chez toi.
 
-mode: local                  # local | hybride | qualite  (voir docs/costs.md)
+mode: groq                     # groq | local | hybride | qualite
+                               #  groq    = RECOMMANDÉ : ultra-rapide (Groq Cloud), Llama 3.3, rotation auto anti-429
                                #  local   = tout local (Ollama + Piper), rien ne sort
-                               #  hybride = DEFAUT : reflexes + vision en Claude eco ;
-                               #            taches de fond confiees a Hermes
-                               #  qualite = cloud partout, modele le plus fort
-                               # (l'ancien "cloud" reste accepte = hybride)
+                               #  hybride = reflexes + vision en Claude eco ; taches de fond confiees a Hermes
+                               #  qualite = cloud partout, modele le plus fort (Claude Sonnet)
+
+groq:                          # https://console.groq.com/keys (gratuit et ultra-rapide)
+  cle: "gsk_..."               # ta cle API Groq
+  modele: "openai/gpt-oss-120b" # modele principal (openai/gpt-oss-120b, openai/gpt-oss-20b, etc.)
+  modeles_rotation:            # rotation automatique si saturation (HTTP 429)
+    - "openai/gpt-oss-120b"
+    - "openai/gpt-oss-20b"
+    - "groq/compound"
+    - "llama-3.3-70b-versatile"
+  temperature: 0.3
+  max_tokens: 1024
 
 ollama:                        # mode local : modele de langage local (http://localhost:11434)
   hote: "http://localhost:11434"

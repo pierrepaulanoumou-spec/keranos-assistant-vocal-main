@@ -20,11 +20,15 @@ _RACINE = Path(__file__).resolve().parent.parent
 _VERROU = threading.Lock()
 
 # Prix par defaut ($ / million de tokens : entree, sortie). Surchargeables via
-# config budget.prix. Cle = sous-chaine du nom de modele (tarifs API Anthropic).
+# config budget.prix. Cle = sous-chaine du nom de modele (tarifs Anthropic / Groq).
 _PRIX_DEFAUT = {
     "haiku": (1.0, 5.0),
     "sonnet": (3.0, 15.0),
     "opus": (5.0, 25.0),
+    "llama-3.3-70b": (0.59, 0.79),
+    "llama-3.1-8b": (0.05, 0.08),
+    "mixtral-8x7b": (0.24, 0.24),
+    "groq": (0.10, 0.20),
 }
 
 

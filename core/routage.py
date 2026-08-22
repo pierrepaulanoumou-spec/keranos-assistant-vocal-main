@@ -21,7 +21,7 @@ import subprocess
 from core.config import definir, reglage
 
 LOG = logging.getLogger("jarvis")
-_MODES = ("local", "hybride", "qualite")
+_MODES = ("local", "hybride", "qualite", "groq")
 
 
 # ------------------------------------------------------------------ modes
@@ -82,7 +82,7 @@ def suspendre_crons_non_critiques():
     for nom in _crons_noms():
         if nom.lower() in critiques:
             continue
-        if _hermes(["cron", "pause", nom], timeout=15) != "" or True:
+        if _hermes(["cron", "pause", nom], timeout=15) != "":
             suspendus.append(nom)
     if suspendus:
         LOG.info("crons Hermes suspendus (plafond budget) : %s", suspendus)

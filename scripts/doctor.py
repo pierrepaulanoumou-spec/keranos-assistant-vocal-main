@@ -133,10 +133,29 @@ def _reco_modele(vram):
 
 def v_llm():
     titre("Modele de langage (LLM)")
-    mode = reglage("mode", "cloud")
-    if mode == "local":
+    mode = reglage("mode", "groq")
+    if mode == "groq" or (reglage("groq.cle", "") and not reglage("anthropic.cle", "")):
+        cle = reglage("groq.cle", "")
+        modele = reglage("groq.modele", "llama-3.3-70b-versatile")
+        if cle:
+            try:
+                import requests
+                r = requests.get(
+                    "https://api.groq.com/openai/v1/models",
+                    headers={"Authorization": f"Bearer {cle}"},
+                    timeout=5,
+                )
+                if r.status_code == 200:
+                    ok(f"cle Groq valide, connecte a l'API (modele actif: {modele})")
+                else:
+                    ko(f"cle Groq invalide (HTTP {r.status_code})", "verifie ta cle groq.cle sur console.groq.com/keys")
+            except Exception as e:
+                ko("echec de connexion a l'API Groq", f"verifie ta connexion internet ({e})")
+        else:
+            ko("cle Groq absente", "mets groq.cle (console.groq.com/keys) dans config.yaml.")
+    elif mode == "local":
         hote = reglage("ollama.hote", "http://localhost:11434")
-        modele = reglage("ollama.modele", "qwen3.5:4b")
+        modele = reglage("ollama.modele", "qwen2.5:1.5b")
         try:
             import requests
             tags = requests.get(f"{hote.rstrip('/')}/api/tags", timeout=4).json()
