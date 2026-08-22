@@ -1,7 +1,7 @@
 """Abstraction du modele de langage : le reste du code ignore quel provider tourne.
 
 Trois implementations, choisies par config.yaml (mode: groq | cloud/hybride | local) :
-  - GroqProvider    : API Groq (ultra-rapide, Llama 3.3, rotation auto).
+  - GroqProvider    : API Groq (ultra-rapide, Llama 3.3 / GPT-OSS, rotation auto).
   - ClaudeProvider  : API Anthropic (cloud, defaut).
   - OllamaProvider  : Ollama en local (http://localhost:11434), 100% offline.
 
@@ -385,7 +385,7 @@ _LLM = None
 def llm():
     """Provider LLM courant selon le mode (groq | local | hybride | qualite).
 
-    - groq    : GroqProvider (ultra-rapide, Llama 3.3).
+    - groq    : GroqProvider (ultra-rapide, Llama 3.3 / GPT-OSS).
     - local   : Ollama.
     - hybride : Claude, modele economique (anthropic.modele) ou Groq si configure.
     - qualite : Claude, modele fort (anthropic.modele_qualite)."""
@@ -418,4 +418,3 @@ def reinitialiser():
     """Force la reconstruction du provider au prochain llm() (apres un switch de mode)."""
     global _LLM
     _LLM = None
-
